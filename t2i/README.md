@@ -103,6 +103,40 @@ bash train.sh configs/PixelDiT_1024px_pixel_diffusion_stage3.yaml \
 
 > **`--load_from` vs `--resume_from`**: Use `--load_from` to load weights only (fresh optimizer). Use `--resume_from` to fully resume training (restores optimizer, scheduler, step count).
 
+## Multi-step Super-Resolution Training (PixelDiT)
+
+`train.py` now supports switching from plain T2I to **multi-step super-resolution** by setting:
+
+- `--train.task_type=multistep_sr`
+- `--train.sr_scales='[4,2,1]'` (coarse-to-fine; final `1` keeps an HR anchor)
+- `--train.sr_aux_loss_weight=0.2`
+- `--train.sr_aux_per_scale_weight_decay=0.5`
+
+Example:
+
+```bash
+bash train.sh configs/PixelDiT_512px_pixel_diffusion_stage2.yaml \
+  --data.data_dir="[/path/to/dataset]" \
+  --work_dir=/path/to/output \
+  --name=pixeldit-multistep-sr \
+  --train.task_type=multistep_sr \
+  --train.sr_scales='[4,2,1]' \
+  --train.sr_aux_loss_weight=0.2
+```
+
+## Ascend NPU adaptation
+
+Core training utilities now support CUDA/NPU/CPU compatible cache flush and synchronization paths.  
+If `torch_npu` is installed and available, training/sync/seed helpers will use NPU APIs automatically.
+
+## CPU smoke test
+
+Run:
+
+```bash
+python t2i/tests/test_multistep_sr_smoke.py
+```
+
 ### Key Training Configs
 
 | Config | Resolution | Multi-Aspect-Ratio | REPA Weight | Flow Shift | Batch Size |

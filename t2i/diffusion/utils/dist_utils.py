@@ -61,4 +61,7 @@ def get_dist_info():
 
 def flush():
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.empty_cache()

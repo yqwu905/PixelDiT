@@ -60,6 +60,29 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import torch.nn.functional as F
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+try:
+    import torch_npu  # noqa: F401
+except Exception:
+    torch_npu = None
+
+
+def _is_npu_available():
+    return hasattr(torch, "npu") and torch.npu.is_available()
+
+
+def accelerator_empty_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif _is_npu_available():
+        torch.npu.empty_cache()
+
+
+def accelerator_synchronize():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif _is_npu_available():
+        torch.npu.synchronize()
+
 
 def set_fsdp_env():
     # Basic FSDP settings
@@ -102,7 +125,7 @@ def ema_update(model_dest, model_src, rate):
 
 @torch.no_grad()
 def log_validation(accelerator, config, model, logger, step, device, init_noise=None):
-    torch.cuda.empty_cache()
+    accelerator_empty_cache()
 
     vis_sampler = config.scheduler.vis_sampler
     if vis_sampler != "flow_dpm-solver":
@@ -158,7 +181,7 @@ def log_validation(accelerator, config, model, logger, step, device, init_noise=
             )
 
             latents.append(denoised)
-        torch.cuda.empty_cache()
+        accelerator_empty_cache()
 
         for prompt, latent in zip(validation_prompts, latents):
             samples = (
@@ -175,7 +198,7 @@ def log_validation(accelerator, config, model, logger, step, device, init_noise=
     image_logs += run_sampling(init_z=None, label_suffix="", sampler=vis_sampler)
 
     if init_noise is not None:
-        torch.cuda.empty_cache()
+        accelerator_empty_cache()
         gc.collect()
         init_noise = torch.clone(init_noise).to(device)
         image_logs += run_sampling(init_z=init_noise, label_suffix=" w/ init noise", sampler=vis_sampler)
@@ -346,6 +369,29 @@ def train(
 
             clean_images = z
             data_info = batch[3]
+            sr_base = None
+            sr_targets = None
+            task_type = str(getattr(config.train, "task_type", "t2i")).lower()
+            if task_type == "multistep_sr":
+                scales = [max(1, int(s)) for s in getattr(config.train, "sr_scales", [4, 2])]
+                scales = sorted(set(scales), reverse=True)
+                sr_targets = []
+                for i, scale in enumerate(scales):
+                    if scale == 1:
+                        low = clean_images
+                    else:
+                        low = F.interpolate(
+                            clean_images,
+                            scale_factor=1.0 / float(scale),
+                            mode="bilinear",
+                            align_corners=False,
+                            recompute_scale_factor=False,
+                        )
+                    up = F.interpolate(low, size=clean_images.shape[-2:], mode="bilinear", align_corners=False)
+                    if i == 0:
+                        sr_base = up
+                    sr_targets.append(clean_images if scale == 1 else low)
+                clean_images = clean_images - sr_base
 
             lm_time_start = time.time()
             bs = clean_images.shape[0]
@@ -419,6 +465,7 @@ def train(
                 )
                 timesteps = (u * config.scheduler.train_sampling_steps).long().to(clean_images.device)
             grad_norm = None
+            sr_aux_loss = None
             accelerator.wait_for_everyone()
             lm_time_all += time.time() - lm_time_start
             model_time_start = time.time()
@@ -450,7 +497,21 @@ def train(
                     model,
                     clean_images,
                     timesteps,
-                    model_kwargs=dict(y=y, mask=y_mask, data_info=data_info, repa_tokens=repa_tokens),
+                    model_kwargs=dict(
+                        y=y,
+                        mask=y_mask,
+                        data_info=data_info,
+                        repa_tokens=repa_tokens,
+                        sr_condition=sr_base,
+                        sr_base=sr_base,
+                        sr_targets=sr_targets,
+                        sr_loss_config={
+                            "weight": float(getattr(config.train, "sr_aux_loss_weight", 0.0)),
+                            "per_scale_weight_decay": float(
+                                getattr(config.train, "sr_aux_per_scale_weight_decay", 0.5)
+                            ),
+                        },
+                    ),
                 )
                 loss = loss_term["loss"].mean()
 
@@ -458,6 +519,7 @@ def train(
                     repa_loss = loss_term["extra"].get("repa_loss", None)
                     if repa_loss is not None:
                         loss = loss + float(getattr(config.train, "repa_loss_weight", 0.1)) * repa_loss
+                    sr_aux_loss = loss_term["extra"].get("sr_aux_loss", None)
 
                 accelerator.backward(loss)
 
@@ -478,6 +540,8 @@ def train(
             logs.update(opt_step=int(accelerator.sync_gradients))
             if 'repa_loss' in locals() and repa_loss is not None:
                 logs.update(repa_loss=accelerator.gather(repa_loss).mean().item())
+            if 'sr_aux_loss' in locals() and sr_aux_loss is not None:
+                logs.update(sr_aux_loss=accelerator.gather(sr_aux_loss).mean().item())
             if grad_norm is not None:
                 logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
             log_buffer.update(logs)
@@ -544,7 +608,7 @@ def train(
                 global_step % config.train.save_model_steps == 0
                 or (time.time() - training_start_time) / 3600 > config.train.early_stop_hours
             ):
-                torch.cuda.synchronize()
+                accelerator_synchronize()
                 accelerator.wait_for_everyone()
 
                 # Choose different saving methods based on whether FSDP is used
@@ -634,7 +698,7 @@ def train(
 
         if epoch % config.train.save_model_epochs == 0 or epoch == config.train.num_epochs and not config.debug:
             accelerator.wait_for_everyone()
-            torch.cuda.synchronize()
+            accelerator_synchronize()
 
             # Choose different saving methods based on whether FSDP is used
             if config.train.use_fsdp:

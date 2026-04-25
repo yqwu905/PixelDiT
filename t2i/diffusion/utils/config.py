@@ -199,6 +199,12 @@ class TrainingConfig(BaseConfig):
     ema_rate: float = 0.9999
     repa_loss_weight: float = 0.1
     repa_encoder_index: int = 14
+    # super-resolution task switches
+    task_type: str = "t2i"  # ["t2i", "multistep_sr"]
+    sr_scales: List[int] = field(default_factory=lambda: [4, 2])
+    sr_condition_weight: float = 1.0
+    sr_aux_loss_weight: float = 0.0
+    sr_aux_per_scale_weight_decay: float = 0.5
 
 
 

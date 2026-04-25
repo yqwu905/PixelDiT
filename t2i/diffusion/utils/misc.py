@@ -59,6 +59,8 @@ def init_random_seed(seed=None, device="cuda"):
     if world_size == 1:
         return seed
 
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
     if rank == 0:
         random_num = torch.tensor(seed, dtype=torch.int32, device=device)
     else:
@@ -80,8 +82,12 @@ def set_random_seed(seed, deterministic=False):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.manual_seed(seed)
+        torch.npu.manual_seed_all(seed)
     if deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False

@@ -516,9 +516,34 @@ class GaussianDiffusion:
                 terms["loss"] = terms["mse"]
             if "mae" in terms:
                 terms["loss"] = terms["loss"] + terms["mae"]
+            if model_kwargs.get("sr_targets", None) is not None and model_kwargs.get("sr_base", None) is not None:
+                try:
+                    sr_cfg = model_kwargs.get("sr_loss_config", {})
+                    sr_weight = float(sr_cfg.get("weight", 0.0))
+                    if sr_weight > 0:
+                        per_scale_decay = float(sr_cfg.get("per_scale_weight_decay", 0.5))
+                        pred_hr = output + model_kwargs["sr_base"]
+                        sr_targets = model_kwargs["sr_targets"]
+                        sr_aux = 0.0
+                        scale_w = 1.0
+                        for target in sr_targets:
+                            if pred_hr.shape[-2:] != target.shape[-2:]:
+                                pred_scaled = F.interpolate(
+                                    pred_hr, size=target.shape[-2:], mode="bilinear", align_corners=False
+                                )
+                            else:
+                                pred_scaled = pred_hr
+                            sr_aux = sr_aux + scale_w * mean_flat((pred_scaled - target) ** 2)
+                            scale_w *= per_scale_decay
+                        terms.setdefault("extra", {})
+                        terms["extra"]["sr_aux_loss"] = sr_aux.mean()
+                        terms["loss"] = terms["loss"] + sr_weight * sr_aux
+                except Exception:
+                    pass
             # Attach any model-provided extras (e.g., repa_loss)
             if extra_out is not None:
-                terms["extra"] = extra_out
+                terms.setdefault("extra", {})
+                terms["extra"].update(extra_out)
         else:
             raise NotImplementedError(self.loss_type)
 
