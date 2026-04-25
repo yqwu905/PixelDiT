@@ -74,6 +74,11 @@ scheduler:
 
 # training setting
 train:
+  task_type: multistep_sr
+  sr_scales: [4, 2, 1]
+  sr_condition_weight: 1.0
+  sr_aux_loss_weight: 0.2
+  sr_aux_per_scale_weight_decay: 0.5
   num_workers: 10
   seed: 1
   train_batch_size: 8
@@ -115,4 +120,3 @@ train:
   online_metric: false
   eval_metric_step: 2000
   online_metric_dir: metric_helper
-

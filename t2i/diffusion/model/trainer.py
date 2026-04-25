@@ -103,9 +103,16 @@ class PixDiTTrainer(nn.Module):
             nn.Linear(projector_dim, 768),
         )
 
-    def forward(self, x, timestep, y, mask=None, data_info=None, repa_tokens=None, **kwargs):
+    def forward(self, x, timestep, y, mask=None, data_info=None, repa_tokens=None, sr_condition=None, **kwargs):
         x = x.to(self.dtype)
         timestep = timestep.to(self.dtype)
+        if sr_condition is not None:
+            sr_weight = 1.0
+            try:
+                sr_weight = float(getattr(getattr(self.config, "train", None), "sr_condition_weight", 1.0))
+            except Exception:
+                sr_weight = 1.0
+            x = x + sr_weight * sr_condition.to(dtype=self.dtype)
         if y.dim() == 4:
             y_proc = y.squeeze(1)
         elif y.dim() == 3:
@@ -163,5 +170,4 @@ class PixDiTTrainer(nn.Module):
     @property
     def dtype(self):
         return next(self.parameters()).dtype
-
 
